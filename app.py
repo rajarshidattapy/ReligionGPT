@@ -1,94 +1,123 @@
-import streamlit as st
-from time import sleep
-import qdrant_client
-from qdrant_client import models
-from llama_index.core import ChatPromptTemplate
-from llama_index.core.llms import ChatMessage, MessageRole
-from llama_index.embeddings.fastembed import FastEmbedEmbedding
-from llama_index.llms.groq import Groq
-from dotenv import load_dotenv
 import os
+
+import streamlit as st
+from dotenv import load_dotenv
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import FastEmbedEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_groq import ChatGroq
+
 
 load_dotenv()
 
+
+SYSTEM_PROMPT = """
+You are a comparative scripture assistant.
+
+Rules:
+1. Use ONLY the retrieved text.
+2. Never merge teachings.
+3. Answer separately for each scripture.
+4. If a scripture does not address the question, say:
+   \"No direct reference found.\"
+
+Format EXACTLY like this:
+
+Gita says:
+- ...
+
+Bible says:
+- ...
+
+Quran says:
+- ...
+""".strip()
+
+
+def _load_text(path: str) -> str:
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _build_or_load_vectorstore() -> FAISS:
+    embeddings = FastEmbedEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    index_dir = "scripture_faiss"
+
+    if os.path.isdir(index_dir):
+        return FAISS.load_local(
+            index_dir,
+            embeddings,
+            allow_dangerous_deserialization=True,
+        )
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+    docs: list[Document] = []
+
+    for source in ["gita", "bible", "quran"]:
+        txt_path = os.path.join("data", source, f"{source}.txt")
+        if not os.path.isfile(txt_path):
+            raise FileNotFoundError(
+                f"Missing {txt_path}. Run the notebook to generate the .txt files first."
+            )
+        text = _load_text(txt_path)
+        for chunk in splitter.split_text(text):
+            docs.append(Document(page_content=chunk, metadata={"source": source}))
+
+    db = FAISS.from_documents(docs, embeddings)
+    db.save_local(index_dir)
+    return db
+
+
 @st.cache_resource
-def initialize_models():
-    embed_model = FastEmbedEmbedding(model_name="thenlper/gte-large")
-    llm = Groq(model="deepseek-r1-distill-llama-70b")
-    client = qdrant_client.QdrantClient(
-        url=os.getenv("QDRANT_URL"),
-        api_key=os.getenv("QDRANT_API_KEY"),
-        prefer_grpc=True
+def initialize() -> tuple[FAISS, ChatGroq]:
+    if not os.getenv("GROQ_API_KEY"):
+        raise RuntimeError(
+            "GROQ_API_KEY is not set. Add it to your environment or a .env file."
+        )
+
+    db = _build_or_load_vectorstore()
+    llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+    return db, llm
+
+
+def ask(question: str, retriever, llm: ChatGroq) -> str:
+    if hasattr(retriever, "get_relevant_documents"):
+        docs = retriever.get_relevant_documents(question)
+    else:
+        docs = retriever.invoke(question)
+
+    context = "\n\n".join(
+        f"[{d.metadata.get('source', '').upper()}]\n{d.page_content}" for d in docs
     )
-    return embed_model, llm, client
 
-message_templates = [
-    ChatMessage(
-        content="""
-        You are an expert ancient assistant who is well versed in Bhagavad-gita.
-        You are Multilingual, you understand English, Hindi and Sanskrit.
-        
-        Always structure your response in this format:
-        <think>
-        [Your step-by-step thinking process here]
-        </think>
-        
-        [Your final answer here]
-        """,
-        role=MessageRole.SYSTEM),
-    ChatMessage(
-        content="""
-        We have provided context information below.
-        {context_str}
-        ---------------------
-        Given this information, please answer the question: {query}
-        ---------------------
-        If the question is not from the provided context, say `I don't know. Not enough information received.`
-        """,
-        role=MessageRole.USER,
-    ),
-]
+    prompt = f"""{SYSTEM_PROMPT}
 
-def search(query, client, embed_model, k=5):
-    collection_name = "bhagavad-gita"
-    query_embedding = embed_model.get_query_embedding(query)
-    result = client.query_points(
-        collection_name=collection_name,
-        query=query_embedding,
-        limit=k
-    )
-    return result
+Context:
+{context}
 
-def pipeline(query, embed_model, llm, client):
-    # R - Retriever
-    relevant_documents = search(query, client, embed_model)
-    context = [doc.payload['context'] for doc in relevant_documents.points]
-    context = "\n".join(context)
+Question:
+{question}
+"""
 
-    # A - Augment
-    chat_template = ChatPromptTemplate(message_templates=message_templates)
+    result = llm.invoke(prompt).content
+    if isinstance(result, str):
+        return result
+    return "\n".join(str(part) for part in result)
 
-    # G - Generate
-    response = llm.complete(
-        chat_template.format(
-            context_str=context,
-            query=query)
-    )
-    return response
 
-def extract_thinking_and_answer(response_text):
-    """Extract thinking process and final answer from response"""
+def main() -> None:
+    st.title("Comparative Scripture Assistant")
+    st.caption("Gita • Bible • Quran (RAG)")
+
     try:
-        thinking = response_text[response_text.find("<think>") + 7:response_text.find("</think>")].strip()
-        answer = response_text[response_text.find("</think>") + 8:].strip()
-        return thinking, answer
-    except:
-        return "", response_text
+        db, llm = initialize()
+    except Exception as e:
+        st.error(str(e))
+        st.stop()
 
-def main():
-    st.title("🕉️ Bhagavad Gita Assistant")
-    embed_model, llm, client = initialize_models() # this will run only once, and be saved inside the cache
-    
+    retriever = db.as_retriever(search_kwargs={"k": 15})
+
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -97,43 +126,21 @@ def main():
             st.session_state.messages = []
             st.rerun()
 
-    # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            if message["role"] == "assistant":
-                thinking, answer = extract_thinking_and_answer(message["content"])
-                with st.expander("Show thinking process"):
-                    st.markdown(thinking)
-                st.markdown(answer)
-            else:
-                st.markdown(message["content"])
+            st.markdown(message["content"])
 
-    # Chat input
-    if prompt := st.chat_input("Ask your question about the Bhagavad Gita..."):
-        # Display user message
-        st.chat_message("user").markdown(prompt)
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    if question := st.chat_input("Ask a question..."):
+        st.session_state.messages.append({"role": "user", "content": question})
+        with st.chat_message("user"):
+            st.markdown(question)
 
-        # Generate and display response
         with st.chat_message("assistant"):
-            message_placeholder = st.empty()
             with st.spinner("Thinking..."):
-                full_response = pipeline(prompt, embed_model, llm, client)
-                thinking, answer = extract_thinking_and_answer(full_response.text)
-                
-                with st.expander("Show thinking process"):
-                    st.markdown(thinking)
-                
-                response = ""
-                for chunk in answer.split():
-                    response += chunk + " "
-                    message_placeholder.markdown(response + "▌")
-                    sleep(0.05)
-                
-                message_placeholder.markdown(answer)
-                
-        # Add assistant response to history
-        st.session_state.messages.append({"role": "assistant", "content": full_response.text})
+                answer = ask(question, retriever=retriever, llm=llm)
+                st.markdown(answer)
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+
 
 if __name__ == "__main__":
     main()
