@@ -2,6 +2,10 @@
 
 An intelligent conversational assistant powered by Groq that helps users understand and explore the teachings of the Bhagavad Gita, Quran and Bible. The assistant can comprehend and respond in multiple languages including English, Hindi, and Sanskrit.
 
+## Demo:
+<img width="1369" height="944" alt="image" src="https://github.com/user-attachments/assets/a11a8ebd-ad9a-47b0-a4ac-0c58e4b5ec1c" />
+
+
 ## 🛠️ Technical Stack
 
 - **LLM**: Llama-70b (via Groq)
