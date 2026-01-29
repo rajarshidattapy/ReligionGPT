@@ -1,21 +1,27 @@
-# 🕉️ Religion-Assistant
+# Religion-Assistant
 
 An intelligent conversational assistant powered by Groq that helps users understand and explore the teachings of the Bhagavad Gita, Quran and Bible. The assistant can comprehend and respond in multiple languages including English, Hindi, and Sanskrit.
 
-## Demo:
-<img width="1369" height="944" alt="image" src="https://github.com/user-attachments/assets/a11a8ebd-ad9a-47b0-a4ac-0c58e4b5ec1c" />
+## ✨ Features
 
+### 📖 Scripture Q&A Mode
+- Ask questions about religious texts and get comparative answers
+- Retrieval-Augmented Generation (RAG) for accurate scripture-based responses
+- Supports Bhagavad Gita, Bible, and Quran.
+
+### 🏛️ LLM Council Mode
+- Ask any question and watch models defend their assigned books.
 
 ## 🛠️ Technical Stack
 
-- **LLM**: Llama-70b (via Groq)
+- **LLM inference**: Groq
 - **Vector Store**: FAISS
 - **Embeddings**: FastEmbed (Nlper GTE-large model)
 - **Framework**: Langchain
 
 ## 📋 Prerequisites
 
-- Python 3.x
+- Python 3.11
 - Groq API Key
 
 ## Data:
